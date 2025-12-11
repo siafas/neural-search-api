@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify
 import os
 import json
 import time
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 import logging
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-MODELS_DIR = Path("/tmp/models")  # Railway uses /tmp for writable storage
+MODELS_DIR = Path("/tmp/models")
 MODELS_DIR.mkdir(exist_ok=True)
 
 # Global storage for models (loaded on demand)
@@ -51,6 +52,23 @@ class NeuralSearchEngine:
                 logger.error(f"Failed to load model: {e}")
                 raise
     
+    def strip_html(self, text: str) -> str:
+        """Remove HTML tags and clean whitespace"""
+        if not text:
+            return ''
+        # Remove HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    def get_text(self, element, tag: str) -> str:
+        """Safely extract and clean text from XML element"""
+        node = element.find(tag)
+        if node is not None and node.text:
+            return self.strip_html(node.text)
+        return ''
+    
     def train(self, xml_content: str) -> Dict:
         """Train model from XML content"""
         import xml.etree.ElementTree as ET
@@ -66,18 +84,38 @@ class NeuralSearchEngine:
             
             for product in root.findall('.//product'):
                 product_data = {
-                    'id': product.find('id').text if product.find('id') is not None else '',
-                    'name': product.find('name').text if product.find('name') is not None else '',
-                    'model': product.find('model').text if product.find('model') is not None else '',
-                    'description': product.find('description').text if product.find('description') is not None else '',
-                    'category': product.find('category').text if product.find('category') is not None else '',
-                    'price': product.find('price').text if product.find('price') is not None else '',
-                    'image': product.find('image').text if product.find('image') is not None else '',
-                    'url': product.find('url').text if product.find('url') is not None else '',
+                    'id': self.get_text(product, 'id'),
+                    'name': self.get_text(product, 'name'),
+                    'model': self.get_text(product, 'mpn') or self.get_text(product, 'model'),
+                    'description': self.get_text(product, 'description'),
+                    'category': self.get_text(product, 'category'),
+                    'season': self.get_text(product, 'season'),
+                    'gender': self.get_text(product, 'gender'),
+                    'kind_of': self.get_text(product, 'kind_of'),
+                    'fit': self.get_text(product, 'fit'),
+                    'color': self.get_text(product, 'color'),
+                    'manufacturer': self.get_text(product, 'manufacturer'),
+                    'price': self.get_text(product, 'price_with_vat') or self.get_text(product, 'price'),
+                    'image': self.get_text(product, 'image'),
+                    'url': self.get_text(product, 'link') or self.get_text(product, 'url'),
                 }
                 
-                # Create search text
-                search_text = f"{product_data['name']} {product_data['model']} {product_data['description']} {product_data['category']}"
+                # Build rich search text with ALL fields for better semantic matching
+                search_text_parts = [
+                    product_data['name'],
+                    product_data['model'],
+                    product_data['description'][:500],  # Limit description length
+                    product_data['category'],
+                    product_data['season'],
+                    product_data['gender'],
+                    product_data['kind_of'],
+                    product_data['fit'],
+                    product_data['color'],
+                    product_data['manufacturer']
+                ]
+                
+                # Filter out empty strings and join
+                search_text = ' '.join(filter(None, search_text_parts))
                 product_data['search_text'] = search_text
                 
                 products.append(product_data)
@@ -158,9 +196,12 @@ class NeuralSearchEngine:
             fuzzy_scores = []
             for product in self.products:
                 score = max(
-                    fuzz.partial_ratio(query.lower(), (product['name'] or '').lower()),
-                    fuzz.partial_ratio(query.lower(), (product['model'] or '').lower()),
-                    fuzz.partial_ratio(query.lower(), (product['description'] or '').lower())
+                    fuzz.partial_ratio(query.lower(), (product.get('name') or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product.get('model') or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product.get('description') or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product.get('category') or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product.get('season') or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product.get('gender') or '').lower())
                 ) / 100.0
                 fuzzy_scores.append(score)
             
