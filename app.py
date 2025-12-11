@@ -158,9 +158,9 @@ class NeuralSearchEngine:
             fuzzy_scores = []
             for product in self.products:
                 score = max(
-                    fuzz.partial_ratio(query.lower(), product['name'].lower()),
-                    fuzz.partial_ratio(query.lower(), product['model'].lower()),
-                    fuzz.partial_ratio(query.lower(), product['description'].lower())
+                    fuzz.partial_ratio(query.lower(), (product['name'] or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product['model'] or '').lower()),
+                    fuzz.partial_ratio(query.lower(), (product['description'] or '').lower())
                 ) / 100.0
                 fuzzy_scores.append(score)
             
