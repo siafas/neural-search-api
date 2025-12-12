@@ -130,7 +130,9 @@ class NeuralSearchEngine:
             # Generate embeddings
             logger.info(f"Generating embeddings for {len(products)} products...")
             search_texts = [p['search_text'] for p in products]
-            embeddings = self.embedder.encode(search_texts, convert_to_numpy=True)
+            embeddings = self.embedder.encode(search_texts, convert_to_numpy=True, normalize_embeddings=True)
+            
+            logger.info(f"Embeddings normalized for cosine similarity")
             
             # Save model
             model_data = {
@@ -204,10 +206,10 @@ class NeuralSearchEngine:
             boost_config = {}
         
         try:
-            # Neural search
+            # Neural search with cosine similarity
+            # Query embedding is normalized, stored embeddings are already normalized from training
             query_embedding = self.embedder.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
-            embeddings_normalized = self.embeddings / np.linalg.norm(self.embeddings, axis=1, keepdims=True)
-            similarities = np.dot(embeddings_normalized, query_embedding)
+            similarities = np.dot(self.embeddings, query_embedding)
             
             # Fuzzy search scores
             fuzzy_scores = []
