@@ -205,8 +205,9 @@ class NeuralSearchEngine:
         
         try:
             # Neural search
-            query_embedding = self.embedder.encode([query], convert_to_numpy=True)[0]
-            similarities = np.dot(self.embeddings, query_embedding)
+            query_embedding = self.embedder.encode([query], convert_to_numpy=True, normalize_embeddings=True)[0]
+            embeddings_normalized = self.embeddings / np.linalg.norm(self.embeddings, axis=1, keepdims=True)
+            similarities = np.dot(embeddings_normalized, query_embedding)
             
             # Fuzzy search scores
             fuzzy_scores = []
