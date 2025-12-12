@@ -9,6 +9,7 @@ import os
 import json
 import time
 import re
+import threading
 from pathlib import Path
 from typing import List, Dict, Optional
 import logging
@@ -25,6 +26,9 @@ MODELS_DIR.mkdir(exist_ok=True)
 
 # Global storage for models (loaded on demand)
 loaded_models = {}
+
+# Global variable to track training status
+training_status = {}
 
 # =============================================================================
 # Neural Search Engine
@@ -307,6 +311,47 @@ class NeuralSearchEngine:
             return []
 
 # =============================================================================
+# Background Training
+# =============================================================================
+
+def background_train(shop_id: str, xml_content: str):
+    """Background training task"""
+    try:
+        logger.info(f"Background training started for shop {shop_id}")
+        
+        engine = NeuralSearchEngine(shop_id)
+        result = engine.train(xml_content)
+        
+        if result['success']:
+            # Cache the trained model
+            loaded_models[shop_id] = engine
+            
+            training_status[shop_id] = {
+                'status': 'completed',
+                'completed_at': time.time(),
+                'products_count': result['products_count'],
+                'message': 'Training completed successfully'
+            }
+            logger.info(f"Background training completed for shop {shop_id}")
+        else:
+            training_status[shop_id] = {
+                'status': 'failed',
+                'completed_at': time.time(),
+                'error': result.get('error', 'Unknown error'),
+                'message': 'Training failed'
+            }
+            logger.error(f"Background training failed for shop {shop_id}: {result.get('error')}")
+            
+    except Exception as e:
+        logger.error(f"Background training error for shop {shop_id}: {e}")
+        training_status[shop_id] = {
+            'status': 'failed',
+            'completed_at': time.time(),
+            'error': str(e),
+            'message': 'Training failed'
+        }
+
+# =============================================================================
 # API Endpoints
 # =============================================================================
 
@@ -316,7 +361,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'service': 'neural-search-api',
-        'version': '2.0.0'
+        'version': '2.1.0'
     })
 
 @app.route('/search', methods=['GET'])
@@ -397,7 +442,8 @@ def search():
 @app.route('/train', methods=['POST'])
 def train():
     """
-    Train model for a shop
+    Train model for a shop (async)
+    Returns immediately, training happens in background
     
     POST body (JSON):
         {
@@ -423,25 +469,60 @@ def train():
     if not shop_id.isalnum():
         return jsonify({'error': 'Invalid shop_id'}), 400
     
-    try:
-        # Create and train engine
-        engine = NeuralSearchEngine(shop_id)
-        result = engine.train(xml_content)
-        
-        if result['success']:
-            # Cache the trained model
-            loaded_models[shop_id] = engine
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Training endpoint error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    # Set status to "training"
+    training_status[shop_id] = {
+        'status': 'training',
+        'started_at': time.time(),
+        'message': 'Training in progress...'
+    }
+    
+    # Start training in background thread
+    thread = threading.Thread(
+        target=background_train,
+        args=(shop_id, xml_content)
+    )
+    thread.daemon = True
+    thread.start()
+    
+    logger.info(f"Training started in background for shop {shop_id}")
+    
+    return jsonify({
+        'success': True,
+        'message': 'Training started in background',
+        'shop_id': shop_id,
+        'status': 'training'
+    })
+
+@app.route('/training-status', methods=['GET'])
+def get_training_status():
+    """
+    Get training status for a shop
+    
+    Query params:
+        shop_id (required): Shop identifier
+    """
+    shop_id = request.args.get('shop_id')
+    
+    if not shop_id:
+        return jsonify({'error': 'shop_id is required'}), 400
+    
+    if not shop_id.isalnum():
+        return jsonify({'error': 'Invalid shop_id'}), 400
+    
+    status = training_status.get(shop_id, {
+        'status': 'unknown',
+        'message': 'No training records found'
+    })
+    
+    return jsonify({
+        'shop_id': shop_id,
+        **status
+    })
 
 @app.route('/status', methods=['GET'])
 def status():
     """
-    Get training status for a shop
+    Get model status for a shop
     
     Query params:
         shop_id (required): Shop identifier
