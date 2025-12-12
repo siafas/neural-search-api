@@ -31,7 +31,7 @@ loaded_models = {}
 # =============================================================================
 
 class NeuralSearchEngine:
-    """Neural search with fuzzy fallback"""
+    """Neural search with fuzzy fallback and configurable boosting"""
     
     def __init__(self, shop_id: str):
         self.shop_id = shop_id
@@ -176,8 +176,16 @@ class NeuralSearchEngine:
             logger.error(f"Error loading model: {e}")
             return False
     
-    def search(self, query: str, limit: int = 5) -> List[Dict]:
-        """Search products using neural + fuzzy approach"""
+    def search(self, query: str, limit: int = 5, boost_config: Dict = None, min_threshold: float = 0.0) -> List[Dict]:
+        """
+        Search products using neural + fuzzy approach with configurable boosting
+        
+        Args:
+            query: Search query
+            limit: Max results to return
+            boost_config: Dict with boost weights e.g. {'season': 0.15, 'category': 0.10}
+            min_threshold: Minimum score threshold (0.0 - 1.0)
+        """
         from rapidfuzz import fuzz
         import numpy as np
         
@@ -186,6 +194,10 @@ class NeuralSearchEngine:
                 return []
         
         self.load_model()
+        
+        # Default boost config
+        if boost_config is None:
+            boost_config = {}
         
         try:
             # Neural search
@@ -208,13 +220,82 @@ class NeuralSearchEngine:
             # Combine scores (70% neural, 30% fuzzy)
             combined_scores = 0.7 * similarities + 0.3 * np.array(fuzzy_scores)
             
-            # Get top results
-            top_indices = np.argsort(combined_scores)[::-1][:limit]
+            # APPLY BOOSTING based on attribute matches
+            query_lower = query.lower()
+            boosted_scores = combined_scores.copy()
+            
+            for idx, product in enumerate(self.products):
+                boost = 0.0
+                
+                # Season boost
+                if boost_config.get('season', 0) > 0:
+                    season = (product.get('season') or '').lower()
+                    if season:
+                        # Check for seasonal keywords in query
+                        if ('καλοκαίρι' in query_lower or 'summer' in query_lower) and 'καλοκαιρ' in season:
+                            boost += boost_config['season']
+                        elif ('χειμώνα' in query_lower or 'κρύο' in query_lower or 'winter' in query_lower) and 'χειμ' in season:
+                            boost += boost_config['season']
+                        elif ('άνοιξη' in query_lower or 'spring' in query_lower) and 'ανοιξ' in season:
+                            boost += boost_config['season']
+                        elif ('φθινόπωρο' in query_lower or 'autumn' in query_lower or 'fall' in query_lower) and 'φθιν' in season:
+                            boost += boost_config['season']
+                
+                # Category boost
+                if boost_config.get('category', 0) > 0:
+                    category = (product.get('category') or '').lower()
+                    if category and category in query_lower:
+                        boost += boost_config['category']
+                
+                # Manufacturer boost
+                if boost_config.get('manufacturer', 0) > 0:
+                    manufacturer = (product.get('manufacturer') or '').lower()
+                    if manufacturer and manufacturer in query_lower:
+                        boost += boost_config['manufacturer']
+                
+                # Color boost
+                if boost_config.get('color', 0) > 0:
+                    color = (product.get('color') or '').lower()
+                    if color and color in query_lower:
+                        boost += boost_config['color']
+                
+                # Gender boost
+                if boost_config.get('gender', 0) > 0:
+                    gender = (product.get('gender') or '').lower()
+                    if gender and gender in query_lower:
+                        boost += boost_config['gender']
+                
+                # Fit boost
+                if boost_config.get('fit', 0) > 0:
+                    fit = (product.get('fit') or '').lower()
+                    if fit and any(word in query_lower for word in fit.split()):
+                        boost += boost_config['fit']
+                
+                # Kind_of boost
+                if boost_config.get('kind_of', 0) > 0:
+                    kind_of = (product.get('kind_of') or '').lower()
+                    if kind_of and kind_of in query_lower:
+                        boost += boost_config['kind_of']
+                
+                boosted_scores[idx] += boost
+            
+            # Sort by boosted scores
+            sorted_indices = np.argsort(boosted_scores)[::-1]
+            
+            # APPLY THRESHOLD FILTER
+            if min_threshold > 0:
+                filtered_indices = [i for i in sorted_indices if boosted_scores[i] >= min_threshold]
+            else:
+                filtered_indices = sorted_indices
+            
+            # Get top results up to limit
+            top_indices = filtered_indices[:limit]
             
             results = []
             for idx in top_indices:
                 product = self.products[idx].copy()
-                product['score'] = float(combined_scores[idx])
+                product['score'] = float(boosted_scores[idx])
+                product['base_score'] = float(combined_scores[idx])
                 product['neural_score'] = float(similarities[idx])
                 product['fuzzy_score'] = float(fuzzy_scores[idx])
                 results.append(product)
@@ -235,22 +316,43 @@ def health():
     return jsonify({
         'status': 'healthy',
         'service': 'neural-search-api',
-        'version': '1.0.0'
+        'version': '2.0.0'
     })
 
 @app.route('/search', methods=['GET'])
 def search():
     """
-    Search products for a shop
+    Search products for a shop with configurable boosting
     
     Query params:
         shop_id (required): Shop identifier
         q (required): Search query
         limit (optional): Max results (default: 5)
+        min_threshold (optional): Minimum score threshold (default: 0.0)
+        boost_season (optional): Season boost weight (default: 0.0)
+        boost_category (optional): Category boost weight (default: 0.0)
+        boost_manufacturer (optional): Manufacturer boost weight (default: 0.0)
+        boost_color (optional): Color boost weight (default: 0.0)
+        boost_gender (optional): Gender boost weight (default: 0.0)
+        boost_fit (optional): Fit boost weight (default: 0.0)
+        boost_kind_of (optional): Kind_of boost weight (default: 0.0)
     """
     shop_id = request.args.get('shop_id')
     query = request.args.get('q')
     limit = int(request.args.get('limit', 5))
+    
+    # Get boost configuration from query params
+    boost_config = {
+        'season': float(request.args.get('boost_season', 0.0)),
+        'category': float(request.args.get('boost_category', 0.0)),
+        'manufacturer': float(request.args.get('boost_manufacturer', 0.0)),
+        'color': float(request.args.get('boost_color', 0.0)),
+        'gender': float(request.args.get('boost_gender', 0.0)),
+        'fit': float(request.args.get('boost_fit', 0.0)),
+        'kind_of': float(request.args.get('boost_kind_of', 0.0)),
+    }
+    
+    min_threshold = float(request.args.get('min_threshold', 0.0))
     
     if not shop_id:
         return jsonify({'error': 'shop_id is required'}), 400
@@ -275,15 +377,17 @@ def search():
         else:
             engine = loaded_models[shop_id]
         
-        # Search
-        results = engine.search(query, limit)
+        # Search with boosting
+        results = engine.search(query, limit, boost_config, min_threshold)
         
         return jsonify({
             'success': True,
             'shop_id': shop_id,
             'query': query,
             'results': results,
-            'count': len(results)
+            'count': len(results),
+            'boost_config': boost_config,
+            'min_threshold': min_threshold
         })
         
     except Exception as e:
